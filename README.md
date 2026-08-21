@@ -1,156 +1,132 @@
 # AI WordPress Content Pipeline
 
-`Python` `Claude CLI` `WordPress REST API` `Yoast SEO` — resumable, runs unattended
+Automated SEO content and publishing pipeline: keyword briefs go in, scheduled
+WordPress posts with full SEO metadata come out, unattended.
 
-I run two content sites — **[AIRA](https://student-aira.com)**, my AI career-assistant
-startup for students, and an NFC-products company site (nfc-msk.ru) — and neither
-one has a content team. Writing and scheduling SEO articles by hand doesn't scale,
-and I really didn't want to publish 50 posts in one afternoon and have the whole
-blog look like it was dumped there overnight. So I built a pipeline that does the
-whole thing: keyword brief in, scheduled WordPress post out, spread across the
-week like a person would actually publish.
+## Problem
 
-It handles both of my sites from one config file, and it auto-publishes straight
-into WordPress — no copy-pasting drafts, no manual scheduling in wp-admin. I point
-it at a CSV of keyword briefs and it takes care of generation, SEO metadata, and
-publishing on its own.
+I run two content-dependent sites — my startup **[AIRA](https://student-aira.com)**
+(job-search/career assistance for students) and an NFC-products company site
+(nfc-msk.ru) — and neither has a content team. Writing and scheduling SEO
+articles by hand doesn't scale past a handful a week. The naive fix (generate
+everything, publish it all at once) creates a different problem: a blog that
+looks like it was dumped online overnight instead of published by a real team,
+which is itself a weak signal for both users and search engines.
 
-## What it does, start to finish
+## Solution
+
+A pipeline that turns a CSV of keyword briefs into fully-formed WordPress
+articles — generated, SEO-tagged, and scheduled at a pace that reads as
+organic — with no manual step between "brief written" and "post live."
+
+## Key features
+
+- **Brief-to-article generation** through the Claude CLI: title, body, category,
+  tags, and Yoast SEO title/meta-description/focus-keyword, from a structured
+  keyword brief (main keyword, secondary keywords, search intent, H2/H3 outline,
+  internal-link targets, target word count).
+- **Direct WordPress publishing** via the REST API using an application
+  password (scoped, never the account login), with `post_status: future` —
+  WordPress's own scheduler releases the post, so the pipeline doesn't need to
+  be running when it goes live.
+- **Controlled pacing**, per site: a `posts_per_day` limit and a list of
+  publish-time slots, with the next open slot picked automatically (plus a
+  random offset in minutes) so publish times don't look scripted.
+- **Resumable and dedup-safe**: every generated article is cached with its
+  publish state; anything already published for a given keyword is skipped
+  automatically, so the pipeline can be stopped, resumed weeks later, or fed a
+  second batch of briefs without risk of duplicate posts.
+- **Manual-content import path** (`import_manual.py`) for articles that arrive
+  pre-written (commonly as `.xlsx` exports). These exports are frequently
+  templated — dozens of articles sharing one paragraph skeleton with the
+  keyword swapped — which is a near-duplicate-content risk. This script rewrites
+  the templated passages through the Claude CLI while preserving facts and
+  structure, then dedupes and schedules them the same way as generated content.
+
+## Architecture
 
 ```
-topics/<site>.csv  →  Claude CLI writes the article  →  WordPress REST API
-   (keyword brief)      (title, body, Yoast meta,          post_status: future
-                         category, tags)                    → WP's own cron
-                                                               publishes it later
+topics/<site>.csv  →  pipeline.py: Claude CLI generates article  →  WordPress REST API
+   (keyword brief)      (title, body, Yoast meta, category, tags)     post_status: future
+                                                                       → WP's own scheduler
+                                                                          publishes it later
 ```
 
-1. **Briefs** — one row per article in `topics/<site>.csv`: main keyword, up to
-   14 secondary keywords, search intent, category, an H2/H3 outline, internal
-   links to weave in, target word count.
-2. **Generation** — `pipeline.py` calls the Claude CLI per brief and gets back a
-   full article plus Yoast SEO title/meta description/focus keyword.
-3. **Auto-publishing to both sites** — posts go out through the WordPress REST
-   API using an application password (never my actual account password), with
-   `post_status: future`. WordPress's own scheduler releases them — the script
-   doesn't need to be running when a post goes live.
-4. **Pacing** — each site has its own `posts_per_day` and a list of publish
-   times; the pipeline finds the next open slot (plus a few random minutes) so
-   the timing doesn't look scripted. AIRA gets 4/day, the NFC site gets 3/day —
-   I picked those numbers on purpose, I didn't want either blog to look like a
-   content farm.
-5. **Resumable** — every generated article is cached in `articles/<site>/*.json`.
-   If a keyword's already published, it's skipped. I can kill the script
-   mid-run, come back a week later, add more briefs, and re-run it — it won't
-   double-publish anything.
+Two independent site configs (AIRA, NFC MSK) run off one `config.json` — same
+codebase, different keyword queues, prompt templates, and publish cadence per
+site.
 
-## For when the content already exists
+## Tech stack
 
-`import_manual.py` is for the times I already had text written — usually
-exported to `.xlsx` by someone else. The recurring problem with those exports is
-that they're heavily templated: dozens of articles built on the exact same
-paragraph skeleton with just the keyword swapped in, which is a near-duplicate-
-content SEO risk if you publish it as-is. The script runs the templated chunks
-back through the Claude CLI to rewrite them while keeping the facts and
-structure intact, dedupes against everything already live (by keyword, not row
-number — the numbering never matches between a manual export and `topics/*.csv`),
-and schedules the result the same way the main pipeline does.
+Python (standard library + `openpyxl` for `.xlsx` import), the Claude CLI as
+the generation engine, WordPress REST API + Yoast SEO for publishing.
 
-## Commands I actually use
+## How it works
 
 ```bash
-python pipeline.py status                       # what's generated / published, per site
+python pipeline.py status                       # generated / published summary, per site
 python pipeline.py run --site aira               # work through the AIRA queue
-python pipeline.py run --site nfc --limit 5      # just 5 for the NFC site
-python pipeline.py publish-drafts --site aira    # flip script drafts to publish
+python pipeline.py run --site nfc --limit 5      # 5 articles for the NFC site
+python pipeline.py publish-drafts --site aira    # flip script-created drafts to publish
 python import_manual.py --site nfc --limit 5     # import pre-written .xlsx content
 ```
-
-## Layout
 
 ```
 pipeline.py                 generation + WordPress publishing, both sites
 import_manual.py            import & de-templatize pre-written content
 build_topics_batch*.py      generate a new batch of keyword-brief CSVs
 prompts/                    per-site prompt templates
-topics/                     keyword-brief queues (gitignored — it's business data)
+topics/                     keyword-brief queues (gitignored — business data)
 articles/                   generated article cache / publish state (gitignored)
 config.json                 site URLs, WP app passwords, model, schedule (gitignored)
 config.example.json         same shape, no real credentials
 ```
 
-## Setting it up
+Setup:
 
 ```bash
 pip install -r requirements.txt
-cp config.example.json config.json   # then fill in real URLs + WP application passwords
+cp config.example.json config.json   # fill in real site URLs + WP application passwords
 ```
 
-You need a WordPress **application password** per site (Users → Profile →
-Application Passwords in wp-admin) — not your login password, WordPress will
-happily generate a scoped one for exactly this.
+A WordPress **application password** per site (Users → Profile → Application
+Passwords) is required — not the account login password.
 
-## A couple of things I hit along the way
+## My role
 
-- Yoast accepts SEO meta straight through the REST API, no extra plugin/snippet
-  needed — took me a while to confirm that, so noting it here.
-- The Claude CLI path in `config.json` is tied to the installed app version and
-  breaks every time Claude Desktop updates. Annoying, but easy to fix — just
-  update the path.
-- One article takes roughly 3–5 minutes to generate.
+Designed and built the full pipeline solo: the brief schema, the generation
+step, the WordPress integration, the scheduling/pacing logic, and the
+de-duplication and resume logic. Also wrote the manual-import path after
+running into templated `.xlsx` content in practice.
+
+## Challenges / lessons
+
+- Getting Yoast's SEO fields to accept values through the REST API cleanly
+  (no separate plugin/snippet needed) took some trial and error to confirm.
+- The naive version of this (generate + publish immediately) produces a blog
+  that reads as machine-dumped. The scheduling/pacing logic exists specifically
+  to fix that — it's a small piece of code but it's the part that actually
+  matters for how the output is perceived.
+- Templated pre-written content (`import_manual.py`'s reason for existing) is a
+  real, recurring problem with manual `.xlsx` exports — the rewrite pass isn't
+  optional if you care about avoiding near-duplicate-content SEO issues.
+- The Claude CLI path in config is tied to the installed app version and breaks
+  on every Claude Desktop update — a known rough edge, not yet automated away.
+
+## Status
+
+Active, in use for both sites. Used to plan and schedule 100 articles across
+AIRA and the NFC site (50 + 50) from keyword briefs.
+
+## Future improvements
+
+- Automate the Claude CLI path resolution instead of hand-editing config after
+  every app update.
+- Add a lightweight review/approval step before articles move from draft to
+  scheduled, for higher-stakes content.
 
 ---
 
-## Русская версия
-
-У меня два контентных сайта — **AIRA**, мой стартап-AI-ассистент поиска работы
-для студентов, и сайт NFC-услуг (nfc-msk.ru) — и ни у одного нет команды
-копирайтеров. Писать и вручную ставить в расписание SEO-статьи не масштабируется,
-а публиковать 50 постов за один вечер я тоже не хотел — блог сразу бы выглядел
-так, будто его залили за ночь. Поэтому сделал конвейер, который делает всё сам:
-на входе бриф по ключевым словам, на выходе — запланированный пост в WordPress,
-растянутый по неделе, как будто публикует живой человек.
-
-Он ведёт оба моих сайта из одного конфига и публикует прямо в WordPress сам —
-без копипасты черновиков и без ручного планирования в админке. Я просто
-подкидываю ему CSV с брифами по ключевым словам, а генерацию, SEO-мету и
-публикацию на **оба сайта** — на nfc-msk.ru и student-aira.com — он делает сам.
-
-## Как это работает целиком
-
-Тема из `topics/<site>.csv` → генерация статьи через Claude CLI (заголовок,
-текст, Yoast-мета) → **автопубликация в WordPress через REST API** со статусом
-`future` — сам WordPress публикует по расписанию, скрипту не нужно быть
-запущенным в момент выхода поста.
-
-**Темп** — у каждого сайта свой `posts_per_day` и список времени публикации;
-конвейер сам находит ближайший свободный слот (плюс случайные минуты), чтобы
-время выхода не выглядело скриптово. AIRA — 4 поста в день, NFC — 3, специально
-не больше, чтобы блог не превращался в контент-ферму.
-
-**Возобновляемость** — каждая сгенерированная статья кэшируется в
-`articles/<site>/*.json`. Уже опубликованные темы пропускаются автоматически.
-Могу прервать скрипт, вернуться через неделю, докинуть новых брифов и
-перезапустить — дублей не будет.
-
-## Когда текст уже готов
-
-`import_manual.py` — для случаев, когда текст уже написан (обычно выгружен в
-`.xlsx` кем-то ещё). Частая проблема таких выгрузок — жёсткий шаблон: десятки
-статей на одном каркасе абзацев с заменой только ключевика, что рискует
-near-duplicate content по SEO. Скрипт переписывает шаблонные куски через Claude
-CLI, сохраняя факты и структуру, дедуплицирует по ключевому слову (не по номеру
-строки — нумерация в ручных файлах не совпадает с `topics/*.csv`) и планирует
-публикацию так же, как основной конвейер.
-
-**Стек:** Python (стандартная библиотека + `openpyxl` для xlsx), Claude CLI как
-движок генерации, WordPress REST API + Yoast SEO meta для публикации на оба
-сайта.
-
-**Команды и структура** — см. английскую версию выше, файлы общие для обеих
-версий README.
-
-**По мелочи, что узнал по пути:** Yoast принимает SEO-мету прямо через REST API
-без дополнительного сниппета — не сразу это выяснил, поэтому фиксирую здесь.
-Путь к Claude CLI в `config.json` привязан к версии приложения и ломается при
-каждом обновлении Claude Desktop — но чинится одной строкой. Одна статья
-генерируется примерно 3–5 минут.
+*Note: `topics/`, `articles/`, and `config.json` are gitignored — they hold
+business data (keyword lists, generated content, live credentials) rather than
+code. `config.example.json` shows the config shape without real values.*
