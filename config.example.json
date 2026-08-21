@@ -1,0 +1,17 @@
+{
+  "claude_exe": "C:/path/to/claude.exe",
+  "model": "sonnet",
+  "generation_timeout_sec": 900,
+  "publish_times": ["09:40", "12:20", "15:10", "18:30"],
+  "sites": {
+    "example-site": {
+      "url": "https://example.com",
+      "user": "wp-username",
+      "app_password": "WordPress application password (Users -> Profile -> Application Passwords)",
+      "topics": "topics/example.csv",
+      "prompt": "prompts/example.txt",
+      "post_status": "future",
+      "posts_per_day": 3
+    }
+  }
+}
